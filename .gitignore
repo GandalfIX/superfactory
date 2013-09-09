@@ -13,3 +13,6 @@
 # Gradle intermediate files
 .gradle
 build
+
+# TestNG files
+temp-testng-customsuite.xml
