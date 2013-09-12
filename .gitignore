@@ -13,3 +13,4 @@
 # Gradle intermediate files
 .gradle
 build
+/bin

@@ -1,5 +1,7 @@
 package de.gandalfix.superfactory;
 
+import java.lang.annotation.Annotation;
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.HashMap;
@@ -21,6 +23,12 @@ import java.util.Map;
  * When you want to create a new instance just call the
  * {@link #createInstance(Class, Object...)} method and pass the class you want
  * to instantiate and the arguments along.
+ * 
+ * If the object you ask to instantiate contains JSR-330 style \@Inject
+ * annotations, the {@link SuperFactory} will try to satisfy these dependencies.
+ * Right now all \@Inject occurrences will be processed like Scope=prototype, so
+ * no singletons will be used for the same. Also right now only
+ * {@link ObjectFactory} without arguments are used.
  * 
  * Example <code>
  * <pre>
@@ -55,153 +63,207 @@ import java.util.Map;
  */
 public final class SuperFactory {
 
-    private SuperFactory() {
-        // This class should not be instantiated
-    }
+	private SuperFactory() {
+		// This class should not be instantiated
+	}
 
-    /**
-     * Map from class to instantiate to factory class.
-     */
-    private static Map<Class<?>, Class<?>> knownCreators = new HashMap<Class<?>, Class<?>>();
+	/**
+	 * Map from class to instantiate to factory class.
+	 */
+	private static Map<Class<?>, Class<?>>	knownCreators	= new HashMap<Class<?>, Class<?>>();
 
-    /**
-     * This method registers for the given class to instantiate a class which
-     * contains the object factory methods (creator).
-     * 
-     * The creator class has to have at least one static method that returns an
-     * instance of the classToInstantiate and is marked with the
-     * {@link ObjectFactory} annotation.
-     * 
-     * @param clazzToInstantiate
-     *            Class that may be instantiated later on. Must not be
-     *            <code>null</code>
-     * @param creator
-     *            class that contains the creator methods for the class to
-     *            instantiated. Must not be <code>null</code>.
-     */
-    public static void registerObjectCreator(Class<?> clazzToInstantiate, Class<?> creator) {
-        if (clazzToInstantiate == null) {
-            throw new IllegalArgumentException("clazzToInstantiate must not be null");
-        }
-        if (creator == null) {
-            throw new IllegalArgumentException("creator must not be null");
-        }
+	/**
+	 * This method registers for the given class to instantiate a class which
+	 * contains the object factory methods (creator).
+	 * 
+	 * The creator class has to have at least one static method that returns an
+	 * instance of the classToInstantiate and is marked with the
+	 * {@link ObjectFactory} annotation. Such a factory method must not return
+	 * <code>null</code>!
+	 * 
+	 * @param clazzToInstantiate
+	 *            Class that may be instantiated later on. Must not be
+	 *            <code>null</code>
+	 * @param creator
+	 *            class that contains the creator methods for the class to
+	 *            instantiated. Must not be <code>null</code>.
+	 */
+	public static void registerObjectCreator(final Class<?> clazzToInstantiate, final Class<?> creator) {
+		if (clazzToInstantiate == null) {
+			throw new IllegalArgumentException("clazzToInstantiate must not be null");
+		}
+		if (creator == null) {
+			throw new IllegalArgumentException("creator must not be null");
+		}
 
-        if (hasAnnotatedMethod(clazzToInstantiate, creator)) {
-            knownCreators.put(clazzToInstantiate, creator);
-        } else {
-            throw new IllegalArgumentException(creator.getName() + " has not annotated method that creates an instance of "
-                    + clazzToInstantiate.getName());
-        }
-    }
+		if (hasAnnotatedMethod(clazzToInstantiate, creator)) {
+			knownCreators.put(clazzToInstantiate, creator);
+		} else {
+			throw new IllegalArgumentException(creator.getName() + " has not annotated method that creates an instance of "
+			        + clazzToInstantiate.getName());
+		}
+	}
 
-    /**
-     * Creates an instance of the given class using the parameters.
-     * 
-     * Tries to find in the registered known creators the class for the
-     * clazzToInstantiate. After that a method that matches the parameters is
-     * looked for.
-     * 
-     * @param <T>
-     * @param clazzToInstantiate
-     *            type that should be instantiated. Must not be
-     *            <code>null</code>.
-     * @param args
-     *            arguments for the ObjectFactory method. Must not be
-     *            <code>null</code>.
-     * @return instance of the given class.
-     */
-    public static <T> T createInstance(Class<T> clazzToInstantiate, Object... args) {
-        if (clazzToInstantiate == null) {
-            throw new IllegalArgumentException("The clazzToInstantiate must not be null");
-        }
-        if (args == null) {
-            throw new IllegalArgumentException("The args must not be null");
-        }
+	/**
+	 * Creates an instance of the given class using the parameters.
+	 * 
+	 * Tries to find in the registered known creators the class for the
+	 * clazzToInstantiate. After that a method that matches the parameters is
+	 * looked for.
+	 * 
+	 * @param <T>
+	 * @param clazzToInstantiate
+	 *            type that should be instantiated. Must not be
+	 *            <code>null</code>.
+	 * @param args
+	 *            arguments for the ObjectFactory method. Must not be
+	 *            <code>null</code>.
+	 * @return instance of the given class.
+	 */
+	public static <T> T createInstance(final Class<T> clazzToInstantiate, final Object... args) {
+		if (clazzToInstantiate == null) {
+			throw new IllegalArgumentException("The clazzToInstantiate must not be null");
+		}
+		if (args == null) {
+			throw new IllegalArgumentException("The args must not be null");
+		}
 
-        T instance = null;
-        if (knownCreators.containsKey(clazzToInstantiate)) {
-            Class<?> creator = knownCreators.get(clazzToInstantiate);
-            Method methodToCall = findSuiteableMethod(clazzToInstantiate, creator, args);
-            if (methodToCall != null) {
-                try {
-                    instance = (T) methodToCall.invoke(null, args);
-                } catch (Exception e) {
-                    throw new RuntimeException("Unable to instantiate the class " + clazzToInstantiate.getName(), e);
-                }
-            } else {
-                throw new IllegalArgumentException("Unable to find factory method for class " + clazzToInstantiate.getName());
-            }
-        } else {
-            throw new IllegalArgumentException("Unknown class to instantiate " + clazzToInstantiate.getName());
-        }
-        return instance;
-    }
+		T instance = createActualInstance(clazzToInstantiate, args);
 
-    /**
-     * This method looks in the creator for a suiteable method to create a new
-     * instance.
-     * 
-     * @return <code>null</code> if there is no such method. Method instance
-     *         otherwise.
-     */
-    static Method findSuiteableMethod(Class<?> classToInstantiate, Class<?> creator, Object... args) {
-        Method suitableMethod = null;
+		inject(instance);
+		return instance;
+	}
 
-        Method[] methods = creator.getDeclaredMethods();
+	@SuppressWarnings("unchecked")
+	private static <T> T createActualInstance(final Class<T> clazzToInstantiate, final Object... args) {
+		T instance = null;
+		if (knownCreators.containsKey(clazzToInstantiate)) {
+			Class<?> creator = knownCreators.get(clazzToInstantiate);
+			Method methodToCall = findSuiteableMethod(clazzToInstantiate, creator, args);
+			if (methodToCall != null) {
+				try {
+					instance = (T) methodToCall.invoke(null, args);
+				} catch (Exception e) {
+					throw new RuntimeException("Unable to instantiate the class " + clazzToInstantiate.getName(), e);
+				}
+				// A factory method is not allowed to return null, therefore
+				// this is an error
+				if (instance == null) {
+					throw new RuntimeException("Factory method '" + methodToCall.getName() + "' for '" + clazzToInstantiate.getName()
+					        + "' has returned null");
+				}
+			} else {
+				throw new IllegalArgumentException("Unable to find factory method for class " + clazzToInstantiate.getName());
+			}
+		} else {
+			throw new IllegalArgumentException("Unknown class to instantiate " + clazzToInstantiate.getName());
+		}
+		return instance;
+	}
 
-        for (Method method : methods) {
-            if (method.isAnnotationPresent(ObjectFactory.class) && classToInstantiate.isAssignableFrom(method.getReturnType())) {
-                Class<?>[] parameterTypes = method.getParameterTypes();
-                if (parametersMatch(args, parameterTypes)) {
-                    suitableMethod = method;
-                    break;
-                }
-            }
-        }
+	/**
+	 * This method looks in the creator for a suiteable method to create a new
+	 * instance.
+	 * 
+	 * @return <code>null</code> if there is no such method. Method instance
+	 *         otherwise.
+	 */
+	static Method findSuiteableMethod(final Class<?> classToInstantiate, final Class<?> creator, final Object... args) {
+		Method suitableMethod = null;
 
-        return suitableMethod;
-    }
+		Method[] methods = creator.getDeclaredMethods();
 
-    /**
-     * Checks whether the arguments match the given parameter types.
-     */
-    static boolean parametersMatch(Object[] args, Class<?>[] parameterTypes) {
-        boolean result = true;
-        if (args.length == parameterTypes.length) {
-            for (int i = 0; i < args.length; i++) {
-                Object arg = args[i];
-                if (arg != null) {
-                    if (!parameterTypes[i].isAssignableFrom(arg.getClass())) {
-                        result = false;
-                        break;
-                    }
-                } else {
-                    // ignore null args
-                }
-            }
-        } else {
-            result = false;
-        }
-        return result;
-    }
+		for (Method method : methods) {
+			if (method.isAnnotationPresent(ObjectFactory.class) && classToInstantiate.isAssignableFrom(method.getReturnType())) {
+				Class<?>[] parameterTypes = method.getParameterTypes();
+				if (parametersMatch(args, parameterTypes)) {
+					suitableMethod = method;
+					break;
+				}
+			}
+		}
 
-    /**
-     * Checks whether the given creator class has at least one method that
-     * allows the creation of the classToInstantiate.
-     */
-    static boolean hasAnnotatedMethod(Class<?> classToInstantiate, Class<?> creator) {
-        boolean hasAnno = false;
+		return suitableMethod;
+	}
 
-        Method[] methods = creator.getDeclaredMethods();
-        for (Method method : methods) {
-            if (Modifier.isStatic(method.getModifiers()) && method.isAnnotationPresent(ObjectFactory.class)
-                    && classToInstantiate.isAssignableFrom(method.getReturnType())) {
-                hasAnno = true;
-                break;
-            }
-        }
+	/**
+	 * Checks whether the arguments match the given parameter types.
+	 */
+	static boolean parametersMatch(final Object[] args, final Class<?>[] parameterTypes) {
+		boolean result = true;
+		if (args.length == parameterTypes.length) {
+			for (int i = 0; i < args.length; i++) {
+				Object arg = args[i];
+				if (arg != null) {
+					if (!parameterTypes[i].isAssignableFrom(arg.getClass())) {
+						result = false;
+						break;
+					}
+				} else {
+					// ignore null args
+				}
+			}
+		} else {
+			result = false;
+		}
+		return result;
+	}
 
-        return hasAnno;
-    }
+	/**
+	 * Checks whether the given creator class has at least one method that
+	 * allows the creation of the classToInstantiate.
+	 */
+	static boolean hasAnnotatedMethod(final Class<?> classToInstantiate, final Class<?> creator) {
+		boolean hasAnno = false;
+
+		Method[] methods = creator.getDeclaredMethods();
+		for (Method method : methods) {
+			if (Modifier.isStatic(method.getModifiers()) && method.isAnnotationPresent(ObjectFactory.class)
+			        && classToInstantiate.isAssignableFrom(method.getReturnType())) {
+				hasAnno = true;
+				break;
+			}
+		}
+
+		return hasAnno;
+	}
+
+	/**
+	 * This method is for supporting JSR-330 annotations like
+	 * {@code java.inject.Inject}. If the classes are not available at runtime
+	 * the method does nothing.
+	 * 
+	 * Otherwise the method will try to set the values that should be injected
+	 * into objectToFill.
+	 * 
+	 * Right now this method currently supports only setting of declared fields
+	 * within the object.
+	 * 
+	 * @param objectToFill
+	 *            object that should be processed and the injected properties of
+	 *            which should be filled. Must not be <code>null</code>.
+	 */
+	@SuppressWarnings("unchecked")
+	private static <T> void inject(final T objectToFill) {
+		Class<? extends Annotation> jsr330Inject;
+		try {
+			// Check for availability java @javax.inject.Inject.
+			// If it is not available in the classpath just bail out, and do
+			// nothing.
+			jsr330Inject = (Class<? extends Annotation>) Class.forName("javax.inject.Inject");
+		} catch (ClassNotFoundException e1) {
+			return;
+		}
+		Class<T> clazzOfObject = (Class<T>) objectToFill.getClass();
+		Field[] allFields = clazzOfObject.getDeclaredFields();
+		for (Field field : allFields) {
+			if (field.isAnnotationPresent(jsr330Inject)) {
+				try {
+					field.set(objectToFill, createInstance(field.getType()));
+				} catch (IllegalAccessException e) {
+					throw new RuntimeException("Unable to Inject into '" + field.getName() + "' of '" + clazzOfObject.getName() + "'", e);
+				}
+			}
+		}
+	}
 }
