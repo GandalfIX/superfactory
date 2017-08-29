@@ -11,6 +11,14 @@
 .settings
 
 # Gradle intermediate files
+gradle/
+gradlew
+gradlew.bat
 .gradle
 build
 /bin
+
+
+# IntelliJ files
+.idea
+superfactory.iml
